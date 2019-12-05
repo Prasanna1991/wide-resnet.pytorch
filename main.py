@@ -26,6 +26,7 @@ parser.add_argument('--depth', default=28, type=int, help='depth of model')
 parser.add_argument('--widen_factor', default=10, type=int, help='width of model')
 parser.add_argument('--dropout', default=0.3, type=float, help='dropout_rate')
 parser.add_argument('--dataset', default='cifar10', type=str, help='dataset = [cifar10/cifar100]')
+parser.add_argument('--data_path', default='/home/pkg2182/PycharmProjects/latent_mixmatch/data', type=str)
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
 parser.add_argument('--testOnly', '-t', action='store_true', help='Test mode with the saved model')
 args = parser.parse_args()
@@ -52,8 +53,8 @@ transform_test = transforms.Compose([
 if(args.dataset == 'cifar10'):
     print("| Preparing CIFAR-10 dataset...")
     sys.stdout.write("| ")
-    trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
-    testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=False, transform=transform_test)
+    trainset = torchvision.datasets.CIFAR10(root=args.data_path, train=True, download=True, transform=transform_train)
+    testset = torchvision.datasets.CIFAR10(root=args.data_path, train=False, download=False, transform=transform_test)
     num_classes = 10
 elif(args.dataset == 'cifar100'):
     print("| Preparing CIFAR-100 dataset...")
@@ -79,8 +80,11 @@ def getNetwork(args):
     elif (args.net_type == 'wide-resnet'):
         net = Wide_ResNet(args.depth, args.widen_factor, args.dropout, num_classes)
         file_name = 'wide-resnet-'+str(args.depth)+'x'+str(args.widen_factor)
+    elif (args.net_type == 'wide-resnet-rse'):
+        net = Wide_ResNet_rse(args.depth, args.widen_factor, args.dropout, num_classes, noise_init=args.noise_init, noise_inner=args.noise_inner)
+        file_name = 'wide-resnet-rse-' + str(args.depth) + 'x' + str(args.widen_factor) + '(' + str(args.noise_init) + ',' + str(args.noise_inner) + ')'
     else:
-        print('Error : Network should be either [LeNet / VGGNet / ResNet / Wide_ResNet')
+        print('Error : Network should be either [LeNet / VGGNet / ResNet / Wide_ResNet / Wide_ResNet-rse')
         sys.exit(0)
 
     return net, file_name
@@ -181,7 +185,7 @@ def test(epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
         inputs, targets = Variable(inputs, volatile=True), Variable(targets)
-        outputs = net(inputs)
+        outputs = net(inputs, test=True)
         loss = criterion(outputs, targets)
 
         test_loss += loss.data[0]
@@ -226,3 +230,23 @@ for epoch in range(start_epoch, start_epoch+num_epochs):
 
 print('\n[Phase 4] : Testing model')
 print('* Test results : Acc@1 = %.2f%%' %(best_acc))
+
+#Perform ensembling in the test-time
+if args.net_type == 'wide-resnet-rse':
+    print('\n[Phase 5] : Ensemble Testing model (for RSE model!)')
+    net.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for batch_idx, (inputs, targets) in enumerate(testloader):
+            if use_cuda:
+                inputs, targets = inputs.cuda(), targets.cuda()
+            inputs, targets = Variable(inputs, volatile=True), Variable(targets)
+            outputs = torch.zeros(inputs.size(0), 10).cuda()
+            for i in range(args.ensembleNum):
+                out = net(inputs, test=True) + out
+            _, predicted = out.max(1)
+            total += targets.size(0)
+            correct += predicted.eq(targets).sum().item()
+
+    print(f'Final Test Acc: {100. * correct / total:.3f}')

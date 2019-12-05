@@ -70,11 +70,83 @@ class Wide_ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x, test=False):
         out = self.conv1(x)
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
+        out = F.relu(self.bn1(out))
+        out = F.avg_pool2d(out, 8)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+
+        return out
+
+class Noise(nn.Module):
+    def __init__(self, std):
+        super(Noise, self).__init__()
+        self.std = std
+        self.buffer = None
+
+    def forward(self, x, test=False):
+        if not test:
+            if self.std > 0:
+                if self.buffer is None:
+                    self.buffer = torch.Tensor(x.size()).normal_(0, self.std).cuda()
+                else:
+                    self.buffer.data.resize_(x.size()).normal_(0, self.std)
+                return x + self.buffer
+            return x
+        else:
+            if self.std > 0:
+                return x + torch.Tensor(x.size()).normal_(0, self.std).cuda()
+            else:
+                return x
+
+class Wide_ResNet_rse(nn.Module):
+    def __init__(self, depth, widen_factor, dropout_rate, num_classes, noise_init = 0.2, noise_inner=0.1):
+        super(Wide_ResNet_rse, self).__init__()
+        self.in_planes = 16
+
+        assert ((depth-4)%6 ==0), 'Wide-resnet depth should be 6n+4'
+        n = (depth-4)/6
+        k = widen_factor
+
+        print('| Wide-Resnet %dx%d' %(depth, k))
+        nStages = [16, 16*k, 32*k, 64*k]
+
+        self.conv1 = conv3x3(3,nStages[0])
+        self.layer1 = self._wide_layer(wide_basic, nStages[1], n, dropout_rate, stride=1)
+        self.layer2 = self._wide_layer(wide_basic, nStages[2], n, dropout_rate, stride=2)
+        self.layer3 = self._wide_layer(wide_basic, nStages[3], n, dropout_rate, stride=2)
+        self.bn1 = nn.BatchNorm2d(nStages[3], momentum=0.9)
+        self.linear = nn.Linear(nStages[3], num_classes)
+
+        #Noise layers
+        self.noise_layer_init = Noise(noise_init)
+        self.noise_layer1 = Noise(noise_inner)
+        self.noise_layer2 = Noise(noise_inner)
+        self.noise_layer3 = Noise(noise_inner)
+
+    def _wide_layer(self, block, planes, num_blocks, dropout_rate, stride):
+        strides = [stride] + [1]*(num_blocks-1)
+        layers = []
+
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, dropout_rate, stride))
+            self.in_planes = planes
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x, test=False):
+        out = self.noise_layer_init(x, test)
+        out = self.conv1(out)
+        out = self.layer1(out)
+        out = self.noise_layer1(out, test)
+        out = self.layer2(out)
+        out = self.noise_layer2(out, test)
+        out = self.layer3(out)
+        out = self.noise_layer3(out, test)
         out = F.relu(self.bn1(out))
         out = F.avg_pool2d(out, 8)
         out = out.view(out.size(0), -1)
