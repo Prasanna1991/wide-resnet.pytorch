@@ -29,9 +29,15 @@ parser.add_argument('--dataset', default='cifar10', type=str, help='dataset = [c
 parser.add_argument('--data_path', default='/home/pkg2182/PycharmProjects/latent_mixmatch/data', type=str)
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
 parser.add_argument('--testOnly', '-t', action='store_true', help='Test mode with the saved model')
+parser.add_argument('--ensembleNum', default=10,  type=int, help='How many times ensembling!')
+parser.add_argument('--noise_init', default=0.2,  type=float, help='Init noise std')
+parser.add_argument('--noise_inner', default=0.1, type=float, help='Inner noise std')
+parser.add_argument('--gpu', default='0', type=str,
+                    help='id(s) for CUDA_VISIBLE_DEVICES')
 args = parser.parse_args()
 
 # Hyper Parameter settings
+os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 use_cuda = torch.cuda.is_available()
 best_acc = 0
 start_epoch, num_epochs, batch_size, optim_type = cf.start_epoch, cf.num_epochs, cf.batch_size, cf.optim_type
@@ -111,14 +117,15 @@ if (args.testOnly):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
         inputs, targets = Variable(inputs, volatile=True), Variable(targets)
-        outputs = net(inputs)
-
-        _, predicted = torch.max(outputs.data, 1)
+        out = torch.zeros(inputs.size(0), 10).cuda()
+        for i in range(args.ensembleNum):
+            out = net(inputs, test=True) + out
+        _, predicted = torch.max(out.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
 
-    acc = 100.*correct/total
-    print("| Test Result\tAcc@1: %.2f%%" %(acc))
+    acc = 100.*float(correct)/total
+    print("| Test Result\tAcc@1: {:.4f}".format(acc))
 
     sys.exit(0)
 
@@ -164,7 +171,7 @@ def train(epoch):
         loss.backward()  # Backward Propagation
         optimizer.step() # Optimizer update
 
-        train_loss += loss.data[0]
+        train_loss += loss.item()
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
@@ -172,7 +179,7 @@ def train(epoch):
         sys.stdout.write('\r')
         sys.stdout.write('| Epoch [%3d/%3d] Iter[%3d/%3d]\t\tLoss: %.4f Acc@1: %.3f%%'
                 %(epoch, num_epochs, batch_idx+1,
-                    (len(trainset)//batch_size)+1, loss.data[0], 100.*correct/total))
+                    (len(trainset)//batch_size)+1, loss.item(), 100.*correct/total))
         sys.stdout.flush()
 
 def test(epoch):
@@ -188,14 +195,14 @@ def test(epoch):
         outputs = net(inputs, test=True)
         loss = criterion(outputs, targets)
 
-        test_loss += loss.data[0]
+        test_loss += loss.item()
         _, predicted = torch.max(outputs.data, 1)
         total += targets.size(0)
         correct += predicted.eq(targets.data).cpu().sum()
 
     # Save checkpoint when best model
     acc = 100.*correct/total
-    print("\n| Validation Epoch #%d\t\t\tLoss: %.4f Acc@1: %.2f%%" %(epoch, loss.data[0], acc))
+    print("\n| Validation Epoch #%d\t\t\tLoss: %.4f Acc@1: %.2f%%" %(epoch, loss.item(), acc))
 
     if acc > best_acc:
         print('| Saving Best model...\t\t\tTop1 = %.2f%%' %(acc))
@@ -230,23 +237,3 @@ for epoch in range(start_epoch, start_epoch+num_epochs):
 
 print('\n[Phase 4] : Testing model')
 print('* Test results : Acc@1 = %.2f%%' %(best_acc))
-
-#Perform ensembling in the test-time
-if args.net_type == 'wide-resnet-rse':
-    print('\n[Phase 5] : Ensemble Testing model (for RSE model!)')
-    net.eval()
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for batch_idx, (inputs, targets) in enumerate(testloader):
-            if use_cuda:
-                inputs, targets = inputs.cuda(), targets.cuda()
-            inputs, targets = Variable(inputs, volatile=True), Variable(targets)
-            outputs = torch.zeros(inputs.size(0), 10).cuda()
-            for i in range(args.ensembleNum):
-                out = net(inputs, test=True) + out
-            _, predicted = out.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
-
-    print(f'Final Test Acc: {100. * correct / total:.3f}')
